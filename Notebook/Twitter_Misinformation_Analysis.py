@@ -1,108 +1,81 @@
-# =========================================================
-# Twitter Misinformation Trends Analysis
-# =========================================================
+# --- 1. Install missing dependencies ---
+!pip install vaderSentiment
 
-# --- 0. Install dependencies (for Colab) ---
-!pip install pandas numpy matplotlib seaborn nltk wordcloud vaderSentiment plotly scikit-learn emoji
-
-# --- 1. Imports ---
-import os
+# --- 2. Imports ---
+from google.colab import files
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from wordcloud import WordCloud
-import re
-import plotly.express as px
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import nltk
-from collections import Counter
-import io
-from google.colab import files
-
-# download stopwords
-nltk.download('stopwords')
+import re
 from nltk.corpus import stopwords
-STOPWORDS = set(stopwords.words('english'))
+from wordcloud import WordCloud
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# --- 2. Upload CSV ---
+# --- 3. Upload CSV ---
 uploaded = files.upload()
-kaggle_csv = list(uploaded.keys())[0]
-df = pd.read_csv(io.BytesIO(uploaded[kaggle_csv]), low_memory=False)
-print("✅ Loaded Kaggle CSV. Shape:", df.shape)
+filename = list(uploaded.keys())[0]   # grab the uploaded filename
+
+# --- 4. Load CSV ---
+df = pd.read_csv(filename)   # use the uploaded file name directly
+
+print("✅ Loaded TweepFake CSV. Shape:", df.shape)
 print("Columns:", df.columns.tolist())
 
-# --- 3. Handle missing text ---
-if not any("text" in c.lower() for c in df.columns):
-    print("⚠️ No text column found. Creating synthetic tweets for demo...")
-    df['text'] = df.apply(
-        lambda row: f"This is a {row['account.type']} account classified as {row['class_type']} spreading info about elections and AI.",
-        axis=1
-    )
-else:
-    text_col = [c for c in df.columns if "text" in c.lower()][0]
-    df = df.rename(columns={text_col: "text"})
+# Rename 'status_id' -> 'text' for consistency
+if "status_id" in df.columns:
+    df = df.rename(columns={"status_id": "text"})
 
-# --- 4. Cleaning ---
+# --- 5. Cleaning function ---
+nltk.download('stopwords')
+
 def clean_tweet_text(text):
-    if pd.isna(text):
-        return ""
-    text = str(text)
-    text = re.sub(r'http\S+', '', text)          # remove URLs
-    text = re.sub(r'www.\S+', '', text)
-    text = re.sub(r'@\w+', '', text)             # remove @mentions
-    text = re.sub(r'#', '', text)                # keep hashtag words
-    text = re.sub(r'[^A-Za-z0-9\s]', ' ', text)  # remove emojis/punct
-    text = re.sub(r'\s+', ' ', text).strip().lower()
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www.\S+", "", text)  # remove links
+    text = re.sub(r"[^a-z\s]", "", text)        # keep only letters
+    text = " ".join([w for w in text.split() if w not in stopwords.words("english")])
     return text
 
-df['text_clean'] = df['text'].apply(clean_tweet_text)
+df["text_clean"] = df["text"].astype(str).apply(clean_tweet_text)
 
-# --- 5. Word Cloud ---
-all_text = " ".join(df['text_clean'].dropna().tolist())
-wc = WordCloud(width=1200, height=600, background_color='white', stopwords=STOPWORDS).generate(all_text)
-plt.figure(figsize=(14,7))
-plt.imshow(wc, interpolation='bilinear')
-plt.axis('off')
-plt.title('Word Cloud: Top words in Tweets')
+# --- 6. Word Cloud ---
+all_words = " ".join(df["text_clean"])
+wordcloud = WordCloud(width=800, height=400, background_color="white").generate(all_words)
+
+plt.figure(figsize=(12,6))
+plt.imshow(wordcloud, interpolation="bilinear")
+plt.axis("off")
+plt.title("Word Cloud of Tweets", fontsize=16)
 plt.show()
 
-# --- 6. Sentiment Analysis ---
+# --- 7. Sentiment Analysis ---
 analyzer = SentimentIntensityAnalyzer()
 
-def vader_sentiment(text):
-    return analyzer.polarity_scores(text)
-
-df['vader_scores'] = df['text_clean'].apply(vader_sentiment)
-df['compound'] = df['vader_scores'].apply(lambda x: x['compound'])
-
-def sentiment_label(c):
-    if c >= 0.05:
+def get_sentiment(text):
+    score = analyzer.polarity_scores(text)["compound"]
+    if score >= 0.05:
         return "positive"
-    elif c <= -0.05:
+    elif score <= -0.05:
         return "negative"
     else:
         return "neutral"
 
-df['sentiment'] = df['compound'].apply(sentiment_label)
+df["sentiment"] = df["text_clean"].apply(get_sentiment)
 
 # Sentiment distribution
-sent_counts = df['sentiment'].value_counts().reindex(['positive','neutral','negative']).fillna(0)
-fig = px.bar(x=sent_counts.index, y=sent_counts.values,
-             labels={'x':'Sentiment','y':'Count'},
-             title='Tweet Sentiment Distribution')
-fig.show()
+plt.figure(figsize=(6,4))
+sns.countplot(x="sentiment", data=df, palette="Set2")
+plt.title("Sentiment Distribution")
+plt.show()
 
-# --- 7. "Misinformation Spread" (Fake vs Real accounts) ---
+# --- 8. Bot vs Human Distribution ---
 if "account.type" in df.columns:
-    spread = df.groupby(["account.type","sentiment"]).size().reset_index(name="count")
-    fig = px.bar(spread, x="account.type", y="count", color="sentiment",
-                 title="Misinformation Spread by Account Type (Demo)",
-                 barmode="stack")
-    fig.show()
+    plt.figure(figsize=(6,4))
+    sns.countplot(x="account.type", data=df, palette="coolwarm")
+    plt.title("Bot vs Human Accounts")
+    plt.show()
 
-# --- 8. Save outputs ---
-os.makedirs("outputs", exist_ok=True)
-df.to_csv("outputs/processed_tweets.csv", index=False)
-wc.to_file("outputs/wordcloud.png")
-print("✅ Saved processed data and wordcloud in outputs/")
+# --- 9. Save processed file (optional) ---
+df.to_csv("tweets_processed.csv", index=False)
+print("✅ Analysis complete. Processed file saved as tweets_processed.csv")
